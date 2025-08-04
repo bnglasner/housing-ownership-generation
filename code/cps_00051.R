@@ -73,6 +73,19 @@ data <- data %>%
       RELATE %in% c(101, 201, 202, 203) & OWNERSHP %in% c(21,22) ~ 0,
       RELATE %in% 301:1260                                       ~ 0,
       TRUE                                                       ~ NA_real_
+    ),
+    
+    home_owner_worst = case_when(
+      OWNERSHP == 10        ~ 1,
+      OWNERSHP %in% c(21,22) ~ 0,
+      TRUE                                                       ~ NA_real_
+    ),
+    
+    home_owner_bad = case_when(
+      RELATE %in% c(101, 201, 202, 203,501,701) & OWNERSHP == 10        ~ 1,
+      RELATE %in% c(101, 201, 202, 203,501,701) & OWNERSHP %in% c(21,22) ~ 0,
+      RELATE %in% 901:1260                                       ~ 0,
+      TRUE                                                       ~ NA_real_
     )
   )
 
@@ -80,6 +93,15 @@ data <- data %>%
 ###   Summarize Homeownership Rates   ###
 #########################################
 age_averages <- data %>%
+  group_by(generation, AGE) %>%
+  summarise(
+    home_owner_avg = round(100*weighted.mean(home_owner, w = ASECWTH, na.rm = TRUE),1),
+    
+    .groups = "drop"
+  )
+
+age_averages_bad <- data %>%
+  filter(RELATE %in% c(101)) %>%
   group_by(generation, AGE) %>%
   summarise(
     home_owner_avg = round(100*weighted.mean(home_owner, w = ASECWTH, na.rm = TRUE),1),
@@ -95,7 +117,3 @@ age_averages_wide <- age_averages %>%
 
 setwd(path_output)
 writexl::write_xlsx(age_averages_wide, path = "Ownership_rate_by_generation.xlsx")
-
-
-
-  
