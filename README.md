@@ -15,8 +15,6 @@ This project analyzes how homeownership rates have changed across generations an
 ## Output
 
 - A cleaned dataset summarizing weighted average homeownership by generation and age.
-- Interactive `plotly` visualization showing trends in homeownership across the life course by generation.
-- Color palette moves from darker (older generations) to lighter (younger ones).
 
 ## Usage
 
