@@ -7,7 +7,6 @@ This repository analyzes how homeownership rates evolve across generations over 
 ## Data Source
 
 **IPUMS CPS – Annual Social and Economic Supplement (ASEC)**  
-Extract: `cps_00051.dat` (1962–2024)
 
 Citation requirement (per IPUMS license):
 
