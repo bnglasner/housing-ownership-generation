@@ -24,7 +24,7 @@ Flood, Sarah, Miriam King, Renae Rodgers, Steven Ruggles, J. Robert Warren, Dani
 - `MARST`, `SEX`, `RACE` – Demographic splits  
 - `METRO`, `STATEFIP`, `REGION` – Geographic splits  
 
-The extract includes all ASEC samples from March 1962 through March 2024.
+The extract includes all ASEC samples from March 1976 through March 2025.
 
 ---
 
