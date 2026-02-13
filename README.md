@@ -189,7 +189,7 @@ No inflation adjustment is required for homeownership rates.
 
 To reproduce results:
 
-1. Obtain an IPUMS CPS extract matching `cps_00051`.
+1. Obtain an IPUMS CPS extract
 2. Set your API key in your environment: IPUMS_API_KEY=your_key_here
 3. Run:
 source("run_all.R")
