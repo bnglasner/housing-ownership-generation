@@ -1,7 +1,12 @@
 # How have homeownership rates changed across generations by age?
 # Ben Glasner | 12/09/2024
 
+# Preserve SKIP_SHINY flag if set by run_all.R, then clean environment
+.skip_shiny <- exists("SKIP_SHINY") && isTRUE(SKIP_SHINY)
 rm(list = ls())
+SKIP_SHINY <- .skip_shiny
+rm(.skip_shiny)
+
 options(scipen = 999)
 set.seed(42)
 
@@ -11,13 +16,15 @@ set.seed(42)
 library(dplyr)
 library(tidyr)
 library(ipumsr)
-library(readxl)
+library(fredr)
 library(stringr)
 library(tigris)
 library(tidycensus)
 library(purrr)
 library(plotly)
 library(scales)
+library(ggplot2)
+library(ggrepel)
 
 library(shiny)
 library(tidyverse)
@@ -26,36 +33,107 @@ library(forcats)
 ###########################
 ###   Set Paths         ###
 ###########################
-# Define root directories by user
-project_directories <- list(
-  "Benjamin Glasner" = "C:/Users/Benjamin Glasner/EIG Dropbox/Benjamin Glasner/GitHub/housing-ownership-generation",
-  "bngla"             = "C:/Users/bngla/EIG Dropbox/Benjamin Glasner/GitHub/housing-ownership-generation",
-  "Research"          = "C:/Users/Research/EIG Dropbox/Benjamin Glasner/GitHub/housing-ownership-generation"
-)
+# Locate project root (same strategy as 00a_ipums_api_extract.R)
+# Resolution order:
+#   1. Environment variable HOMEOWNERSHIP_BY_GEN_PROJECT_ROOT
+#   2. This script's own location (code/ is one level below project root)
+#   3. Walk upward from getwd() looking for project markers (README.md + data/)
 
-# Identify current user and assign paths
-current_user <- Sys.info()[["user"]]
-if (!current_user %in% names(project_directories)) {
-  stop("Root folder for current user is not defined.")
+has_project_markers <- function(path) {
+  if (!dir.exists(path)) return(FALSE)
+  readme_ok <- file.exists(file.path(path, "README.md"))
+  data_ok   <- dir.exists(file.path(path, "data")) || dir.exists(file.path(path, "Data"))
+  readme_ok && data_ok
 }
-path_project <- project_directories[[current_user]]
+
+# Strategy 1: Environment variable
+path_project <- Sys.getenv("HOMEOWNERSHIP_BY_GEN_PROJECT_ROOT", unset = "")
+
+# Strategy 2: Derive from this script's own file path
+if (!nzchar(path_project)) {
+  this_file <- tryCatch(
+    normalizePath(sys.frame(1)$ofile, winslash = "/", mustWork = FALSE),
+    error = function(e) NA_character_
+  )
+  if (!is.na(this_file) && nzchar(this_file)) {
+    candidate <- dirname(dirname(this_file))
+    if (has_project_markers(candidate)) {
+      path_project <- candidate
+    }
+  }
+}
+
+# Strategy 3: Walk upward from getwd()
+if (!nzchar(path_project)) {
+  current <- normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+  for (i in 1:15) {
+    if (has_project_markers(current)) {
+      path_project <- current
+      break
+    }
+    parent <- dirname(current)
+    if (identical(parent, current)) break
+    current <- parent
+  }
+}
+
+if (!nzchar(path_project) || is.na(path_project) || !dir.exists(path_project)) {
+  stop(
+    "Could not locate project root.\n\n",
+    "Fix by either:\n",
+    "  (1) Set env var: Sys.setenv(HOMEOWNERSHIP_BY_GEN_PROJECT_ROOT = '/path/to/project')\n",
+    "  (2) Run from within the project directory (must contain README.md and data/)\n",
+    call. = FALSE
+  )
+}
+
+path_project <- normalizePath(path_project, winslash = "/", mustWork = TRUE)
 path_data    <- file.path(path_project, "data")
 path_output  <- file.path(path_project, "output")
 
 ###########################
 ###   Load IPUMS Data   ###
 ###########################
-setwd(path_data)
-ddi  <- read_ipums_ddi("cps_00051.xml")
-data <- read_ipums_micro(ddi)
-PCE <- read_excel("BEA_deflator.xlsx")
+# Auto-detect the most recent CPS DDI file in data/
+find_latest_cps_ddi <- function(data_dir) {
+  xmls <- list.files(data_dir, pattern = "^cps_.*\\.xml$", full.names = TRUE, ignore.case = TRUE)
+  if (length(xmls) == 0) stop("No cps_*.xml found in: ", data_dir, call. = FALSE)
+  xmls[which.max(file.info(xmls)$mtime)]
+}
 
-#########################################
-###   Clean and Prepare Variables     ###
-#########################################
-PCE <- PCE %>%
-  select("...1", "Personal consumption expenditures") %>%
-  rename(YEAR = `...1`, PCE = `Personal consumption expenditures`) 
+ddi  <- read_ipums_ddi(find_latest_cps_ddi(path_data))
+data <- read_ipums_micro(ddi)
+
+###########################
+###   Load PCE Deflator ###
+###########################
+# Pull annual PCE price index from FRED (series PCEPI, 2017=100)
+# FRED API key: set via FRED_API_KEY env var or Sys.setenv(FRED_API_KEY = "your_key")
+# Get a free key at: https://fred.stlouisfed.org/docs/api/api_key.html
+fred_key <- Sys.getenv("FRED_API_KEY", unset = "")
+if (!nzchar(fred_key)) {
+  stop(
+    "\n===========================================\n",
+    "FRED API key not found!\n\n",
+    "Please either:\n",
+    "  1. Add to .Renviron file: FRED_API_KEY=your_key\n",
+    "  2. Set in R session: Sys.setenv(FRED_API_KEY = 'your_key')\n\n",
+    "Get your free key from: https://fred.stlouisfed.org/docs/api/api_key.html\n",
+    "===========================================\n",
+    call. = FALSE
+  )
+}
+fredr_set_key(fred_key)
+
+PCE <- fredr(
+  series_id        = "PCEPI",
+  observation_start = as.Date("1960-01-01"),
+  frequency        = "a"
+) %>%
+  transmute(
+    YEAR = as.integer(format(date, "%Y")),
+    PCE  = value
+  )
 
 
 data <- data %>%
@@ -200,9 +278,189 @@ age_averages_wide <- age_averages %>%
     values_from = home_owner_avg
   )
 
-setwd(path_output)
-writexl::write_xlsx(age_averages_wide, path = "Ownership_rate_by_generation.xlsx")
+writexl::write_xlsx(age_averages_wide, path = file.path(path_output, "Ownership_rate_by_generation.xlsx"))
 
+
+###############################################
+###   Static ggplot2 figure (EIG style)     ###
+###############################################
+
+# Source the EIG theme
+source(file.path(path_project, "code", "theme_eig.R"))
+
+# Define generation display order (exclude Gen-Alpha — only has ages under 20)
+gen_order <- c("Greatest", "Silent", "Boomers", "Gen-X", "Millennials", "Gen-Z")
+
+# Filter data for the plot: ages 20–65, exclude Gen-Alpha
+plot_data <- age_averages %>%
+  filter(generation %in% gen_order, AGE >= 20, AGE <= 65) %>%
+  mutate(generation = factor(generation, levels = gen_order))
+
+# --- Build ribbon data: Gen-X vs Millennials gap ---
+ribbon_genx_mill <- plot_data %>%
+  filter(generation %in% c("Gen-X", "Millennials")) %>%
+  select(generation, AGE, home_owner_avg) %>%
+  pivot_wider(names_from = generation, values_from = home_owner_avg) %>%
+  filter(!is.na(`Gen-X`) & !is.na(Millennials))
+
+# --- Build ribbon data: Millennials vs Gen-Z gap ---
+ribbon_mill_genz <- plot_data %>%
+  filter(generation %in% c("Millennials", "Gen-Z")) %>%
+  select(generation, AGE, home_owner_avg) %>%
+  pivot_wider(names_from = generation, values_from = home_owner_avg) %>%
+  filter(!is.na(Millennials) & !is.na(`Gen-Z`))
+
+# --- Endpoint labels: rightmost point of each generation line ---
+label_data <- plot_data %>%
+  group_by(generation) %>%
+  filter(AGE == max(AGE)) %>%
+  ungroup()
+
+# --- Build the plot ---
+p <- ggplot(plot_data, aes(x = AGE, y = home_owner_avg, color = generation)) +
+  # Shaded ribbon: Gen-X to Millennials
+  geom_ribbon(
+    data = ribbon_genx_mill,
+    aes(x = AGE, ymin = Millennials, ymax = `Gen-X`),
+    inherit.aes = FALSE,
+    fill = eig_ribbon_fill, alpha = 0.4
+  ) +
+  # Shaded ribbon: Millennials to Gen-Z
+  geom_ribbon(
+    data = ribbon_mill_genz,
+    aes(x = AGE, ymin = `Gen-Z`, ymax = Millennials),
+    inherit.aes = FALSE,
+    fill = eig_ribbon_fill, alpha = 0.4
+  ) +
+  # Generation lines
+  geom_line(linewidth = 0.9) +
+  # Direct endpoint labels (no legend)
+  geom_text_repel(
+    data = label_data,
+    aes(label = generation),
+    direction = "y",
+    hjust = 0,
+    nudge_x = 0.5,
+    segment.color = NA,
+    color = "#555555",
+    size = 3.5,
+    family = eig_font_family
+  ) +
+  # Color scale
+  scale_color_manual(values = eig_gen_colors) +
+  # Axis scales
+  scale_x_continuous(breaks = seq(20, 65, 5), limits = c(20, 67)) +
+  scale_y_continuous(breaks = seq(0, 80, 20), limits = c(0, 85)) +
+  # Labels
+  labs(
+    title = "Homeownership rate across the generations",
+    subtitle = "1976 to 2024",
+    caption = "Chart: Ben Glasner | Economic Innovation Group\nSource: CPS ASEC via IPUMS",
+    x = NULL,
+    y = NULL
+  ) +
+  # Apply EIG theme
+  theme_eig()
+
+# Save the figure
+ggsave(
+  filename = file.path(path_output, "homeownership_by_generation.png"),
+  plot = p,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+###############################################
+###   Married vs Never Married figure       ###
+###############################################
+
+plot_data_marr <- age_averages_married %>%
+  filter(generation %in% gen_order, AGE >= 20, AGE <= 65) %>%
+  mutate(generation = factor(generation, levels = gen_order))
+
+# --- Ribbons per marital-status panel ---
+ribbon_genx_mill_marr <- plot_data_marr %>%
+  filter(generation %in% c("Gen-X", "Millennials")) %>%
+  select(Married, generation, AGE, home_owner_avg) %>%
+  pivot_wider(names_from = generation, values_from = home_owner_avg) %>%
+  filter(!is.na(`Gen-X`) & !is.na(Millennials))
+
+ribbon_mill_genz_marr <- plot_data_marr %>%
+  filter(generation %in% c("Millennials", "Gen-Z")) %>%
+  select(Married, generation, AGE, home_owner_avg) %>%
+  pivot_wider(names_from = generation, values_from = home_owner_avg) %>%
+  filter(!is.na(Millennials) & !is.na(`Gen-Z`))
+
+# --- Endpoint labels per panel ---
+label_data_marr <- plot_data_marr %>%
+  group_by(Married, generation) %>%
+  filter(AGE == max(AGE)) %>%
+  ungroup()
+
+# --- Build the faceted plot ---
+p_marr <- ggplot(plot_data_marr, aes(x = AGE, y = home_owner_avg, color = generation)) +
+  geom_ribbon(
+    data = ribbon_genx_mill_marr,
+    aes(x = AGE, ymin = Millennials, ymax = `Gen-X`),
+    inherit.aes = FALSE,
+    fill = eig_ribbon_fill, alpha = 0.4
+  ) +
+  geom_ribbon(
+    data = ribbon_mill_genz_marr,
+    aes(x = AGE, ymin = `Gen-Z`, ymax = Millennials),
+    inherit.aes = FALSE,
+    fill = eig_ribbon_fill, alpha = 0.4
+  ) +
+  geom_line(linewidth = 0.9) +
+  geom_text_repel(
+    data = label_data_marr,
+    aes(label = generation),
+    direction = "y",
+    hjust = 0,
+    nudge_x = 0.5,
+    segment.color = NA,
+    color = "#555555",
+    size = 3,
+    family = eig_font_family
+  ) +
+  scale_color_manual(values = eig_gen_colors) +
+  scale_x_continuous(breaks = seq(20, 65, 5), limits = c(20, 70)) +
+  scale_y_continuous(breaks = seq(0, 80, 20), limits = c(0, 85)) +
+  facet_wrap(~ Married) +
+  labs(
+    title = "Homeownership rate across the generations",
+    subtitle = "By marital status, 1976 to 2024",
+    caption = "Chart: Ben Glasner | Economic Innovation Group\nSource: CPS ASEC via IPUMS",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_eig() +
+  theme(
+    strip.text = element_text(
+      family = eig_font_family, face = "bold",
+      size = 12, colour = "#2A6B4B", hjust = 0
+    ),
+    strip.background = element_blank()
+  )
+
+ggsave(
+  filename = file.path(path_output, "homeownership_by_generation_married.png"),
+  plot = p_marr,
+  width = 12,
+  height = 6,
+  dpi = 300
+)
+
+age_averages_married_wide <- age_averages_married %>%
+  mutate(generation_married = paste(generation,"-",Married)) %>%
+  select(generation_married, AGE, home_owner_avg) %>% 
+  pivot_wider(
+    names_from = generation_married,
+    values_from = home_owner_avg
+  )
+
+writexl::write_xlsx(age_averages_married_wide, path = file.path(path_output, "Ownership_rate_by_generation_married.xlsx"))
 
 
 #################################
@@ -463,4 +721,7 @@ server <- function(input, output, session) {
 }
 
 # ---- RUN APP ----
-shinyApp(ui = ui, server = server)
+# When sourced from run_all.R, skip the Shiny launch (set SKIP_SHINY = TRUE before sourcing)
+if (!isTRUE(SKIP_SHINY)) {
+  shinyApp(ui = ui, server = server)
+}
